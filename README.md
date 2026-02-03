@@ -25,3 +25,4 @@ Skia4Delphi.
          
 have fun :D    
         
+Yea color selection btn missing, had to stop, fingers hurting 😝 make few days break better 
