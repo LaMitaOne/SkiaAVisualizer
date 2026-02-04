@@ -1,5 +1,5 @@
 # SkiaAVisualizer
-Delphi FMX Skia4delphi Audio Visualizer v0.1 alpha
+Delphi FMX Skia4delphi Audio Visualizer v0.2 alpha
 
 A high-performance, hardware-accelerated audio visualizer component for Delphi (FMX). Built on Skia4Delphi, it offers smooth, GPU-rendered visuals.    
      
