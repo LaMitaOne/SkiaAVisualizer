@@ -16,7 +16,7 @@ Features
     Dynamic Backgrounds: Animated gradient blobs that shift based on the selected visualization mode.    
     Customizable: Adjustable sensitivity, FPS limits, and accent colors.    
         
-Sample project uses bass.dll and BASSStreamRecorder.dll    
+Sample project uses bass.dll and BASSStreamRecorder.dll  -> https://www.un4seen.com/       
 sample exe (zipped) included    
         
 Requirements    
