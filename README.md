@@ -1,6 +1,8 @@
 # SkiaAVisualizer
-Delphi FMX Skia4delphi Audio Visualizer v0.2 alpha
+Delphi FMX Skia4delphi Audio Visualizer v0.2 alpha   
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/LaMitaOne/SkiaAVisualizer)
+    
 A high-performance, hardware-accelerated audio visualizer component for Delphi (FMX). Built on Skia4Delphi, it offers smooth, GPU-rendered visuals.    
      
 <img width="669" height="729" alt="Unbenannt" src="https://github.com/user-attachments/assets/7204f8e0-8d4f-4601-b0a7-c92f22806473" />
