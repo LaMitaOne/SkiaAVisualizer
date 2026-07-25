@@ -25,7 +25,18 @@ Requirements
 Delphi 10.4 Sydney or later.    
 Skia4Delphi.    
          
-have fun :D    
+have fun :D       
+
+   
+If you want to tip me a coffee.. :)   
+    
+<p align="center">
+  <a href="https://www.paypal.com/donate/?hosted_button_id=RX5KTTMXW497Q">
+    <img src="https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif" alt="Donate with PayPal"/>
+  </a>
+</p>
+        
+
     
  ----Latest Changes   
   v 0.2:   
