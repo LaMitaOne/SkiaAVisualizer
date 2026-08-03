@@ -1,17 +1,7 @@
 {*******************************************************************************
-  SkiaAudioVisualizer
-********************************************************************************
-  A high-performance, hardware-accelerated audio visualizer for Delphi FMX.
-  Utilizing Skia4Delphi for rendering and BASS for audio processing.
-  Key Features:
-  - Multiple Visualization Modes: Spectrum, Circle, Waveform, and Bass Rain.
-  - Dynamic Backgrounds: Animated gradient blobs reacting to audio type.
+  SkiaAudioVisualizer Demo Form
+  by Lara Miriam Tamy Reschke
 *******************************************************************************}
-{ Skia-Audio-Visualizer Demo Unit                                                 }
-{ by Lara Miriam Tamy Reschke                                                  }
-{                                                                              }
-{------------------------------------------------------------------------------}
-
 
 unit Unit9;
 
@@ -21,25 +11,18 @@ uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Dialogs, FMX.StdCtrls, FMX.Layouts,
   FMX.Controls.Presentation, FMX.ListBox, FMX.Colors, Math, System.SyncObjs,
-  System.AnsiStrings, uSkiaAVisualizer, Winapi.Windows, FMX.Objects;
+  uSkiaAVisualizer, FMX.Objects;
 
 type
-  BASS_DEVICEINFO = record
-    name: PAnsiChar;
-    driver: PAnsiChar;
-    flags: DWORD;
-  end;
-
   TForm9 = class(TForm)
     procedure FormCreate(Sender: TObject);
-    procedure FormDestroy(Sender: TObject);
   private
     FVis: TSkiaAVisualizer;
-    FLayout: TLayout;
+    FPanel: TPanel;
 
     FComboDevice: TComboBox;
-    FComboEffect: TComboBox;
     FComboBackground: TComboBox;
+    FComboVisual: TComboBox;
 
     FTrackSensitivity: TTrackBar;
     FTrackFPS: TTrackBar;
@@ -47,36 +30,24 @@ type
     FLabelStatus: TLabel;
     FLabelSens: TLabel;
     FLabelFPS: TLabel;
+    FLabelAccent: TLabel;
+    FLabelBar: TLabel;
 
     FBtnStart: TButton;
     FColorButton: TColorButton;
-    FColorButton2: TColorButton; // NEW: Second Button
+    FColorButton2: TColorButton;
     FColorPicker: TColorPicker;
-
-    FBassHandle: HMODULE;
-    FRecordChannel: DWORD;
-    FTimer: TTimer;
-    FPrevFFTData: TFFTData;
-
-    BASS_Init: function(device: Integer; freq, flags: DWORD; win: HWND; cls: Pointer): Boolean; stdcall;
-    BASS_Free: function: Boolean; stdcall;
-    BASS_RecordInit: function(device: Integer): Boolean; stdcall;
-    BASS_RecordStart: function(freq, chans, flags: DWORD; proc: Pointer; user: Pointer): DWORD; stdcall;
-    BASS_RecordGetDeviceInfo: function(device: Integer; var info: BASS_DEVICEINFO): Boolean; stdcall;
-    BASS_RecordFree: function: Boolean; stdcall;
-    BASS_ChannelStop: function(handle: DWORD): Boolean; stdcall;
-    BASS_ChannelGetData: function(handle: DWORD; buffer: Pointer; length: DWORD): DWORD; stdcall;
-    BASS_ErrorGetCode: function: Integer; stdcall;
+    FCheckPeaks: TCheckBox;
 
     procedure PopulateDevices;
     procedure StartVisuals;
     procedure OnBtnStartClick(Sender: TObject);
-    procedure OnComboEffectChange(Sender: TObject);
     procedure OnComboBackgroundChange(Sender: TObject);
-    procedure OnTimer(Sender: TObject);
+    procedure OnComboVisualChange(Sender: TObject);
     procedure OnSensChange(Sender: TObject);
     procedure OnFPSChange(Sender: TObject);
     procedure OnColorButtonClick(Sender: TObject);
+    procedure OnPeaksChange(Sender: TObject);
   public
   end;
 
@@ -86,208 +57,193 @@ var
 implementation
 {$R *.fmx}
 
-const
-  BASS_DEVICE_ENABLED = 1;
-  BASS_DATA_FFT2048 = $80000003;
-
 procedure TForm9.FormCreate(Sender: TObject);
-var
-  FRightRowLayout: TLayout;
 begin
   Self.Fill.Color := TAlphaColors.Black;
 
-  FillChar(FPrevFFTData, SizeOf(FPrevFFTData), 0);
+  // Initialize the main visualizer component
+  FVis := TSkiaAVisualizer.Create(Self);
+  FVis.Parent := Self;
+  FVis.Align := TAlignLayout.Client;
 
-  FLayout := TLayout.Create(Self);
-  FLayout.Parent := Self;
-  FLayout.Align := TAlignLayout.Bottom;
-  FLayout.Height := 350;
-  FLayout.Margins.Bottom := 20;
-  FLayout.SendToBack;
+  // Setup the bottom control panel
+  FPanel := TPanel.Create(Self);
+  FPanel.Parent := Self;
+  FPanel.Align := TAlignLayout.Bottom;
+  FPanel.Height := 420;
+  FPanel.Margins.Bottom := 20;
+  FPanel.Margins.Left := 20;
+  FPanel.Margins.Right := 20;
 
+  // Control Panel: Comboboxes for device, background, and visual mode
   FComboDevice := TComboBox.Create(Self);
-  FComboDevice.Parent := FLayout;
-  FComboDevice.Position.Y := 5;
-  FComboDevice.Align := TAlignLayout.Top;
-  FComboDevice.Margins.Left := 20;
-  FComboDevice.Margins.Right := 20;
-
-  FComboEffect := TComboBox.Create(Self);
-  FComboEffect.Parent := FLayout;
-  FComboEffect.Position.Y := 35;
-  FComboEffect.Align := TAlignLayout.Top;
-  FComboEffect.Margins.Left := 20;
-  FComboDevice.Margins.Right := 20;
-  FComboEffect.Items.Add('Spectrum (Neon)');
-  FComboEffect.Items.Add('Circle Scope');
-  FComboEffect.Items.Add('Waveform');
-  FComboEffect.Items.Add('Color Drops');
-  FComboEffect.ItemIndex := 0;
-  FComboEffect.OnChange := OnComboEffectChange;
+  FComboDevice.Parent := FPanel;
+  FComboDevice.SetBounds(20, 10, 200, 32);
 
   FComboBackground := TComboBox.Create(Self);
-  FComboBackground.Parent := FLayout;
-  FComboBackground.Position.Y := 65;
-  FComboBackground.Align := TAlignLayout.Top;
-  FComboBackground.Margins.Left := 20;
-  FComboBackground.Margins.Right := 20;
-  FComboBackground.Items.Add('Gradient Blobs');
-  FComboBackground.Items.Add('Solid Dark');
+  FComboBackground.Parent := FPanel;
+  FComboBackground.SetBounds(230, 10, 150, 32);
   FComboBackground.Items.Add('Solid Black');
-  FComboBackground.ItemIndex := 0;
+  FComboBackground.Items.Add('Gradient Blobs');
+  FComboBackground.ItemIndex := 1;
   FComboBackground.OnChange := OnComboBackgroundChange;
 
-  FLabelSens := TLabel.Create(Self);
-  FLabelSens.Parent := FLayout;
-  FLabelSens.Position.Y := 95;
-  FLabelSens.Text := 'Sensitivity:';
-  FLabelSens.Align := TAlignLayout.Top;
-  FLabelSens.Margins.Left := 20;
-  FLabelSens.Width := 100;
-  FLabelSens.TextAlign := TTextAlign.Leading;
+  FComboVisual := TComboBox.Create(Self);
+  FComboVisual.Parent := FPanel;
+  FComboVisual.SetBounds(390, 10, 150, 32);
+  FComboVisual.Items.Add('Spectrum');
+  FComboVisual.Items.Add('Circle');
+  FComboVisual.Items.Add('Wave');
+  FComboVisual.Items.Add('Color Drops');
+  FComboVisual.ItemIndex := 0;
+  FComboVisual.OnChange := OnComboVisualChange;
 
-  FTrackSensitivity := TTrackBar.Create(Self);
-  FTrackSensitivity.Parent := FLayout;
-  FTrackSensitivity.Position.Y := 115;
-  FTrackSensitivity.Align := TAlignLayout.Top;
-  FTrackSensitivity.Margins.Left := 120;
-  FTrackSensitivity.Margins.Right := 20;
-  FTrackSensitivity.Min := 10;
-  FTrackSensitivity.Max := 100;
-  FTrackSensitivity.Value := 15;
-  FTrackSensitivity.Frequency := 1;
-  FTrackSensitivity.OnChange := OnSensChange;
+  // Control Panel: Color picker and start button
+  FColorPicker := TColorPicker.Create(Self);
+  FColorPicker.Parent := FPanel;
+  FColorPicker.SetBounds(20, 60, 200, 120);
+  FColorPicker.Color := TAlphaColors.Cyan;
 
-  FLabelFPS := TLabel.Create(Self);
-  FLabelFPS.Parent := FLayout;
-  FLabelFPS.Position.Y := 145;
-  FLabelFPS.Text := 'FPS Limit: 60';
-  FLabelFPS.Align := TAlignLayout.Top;
-  FLabelFPS.Margins.Left := 20;
-  FLabelFPS.Width := 150;
-  FLabelFPS.Font.Style := [TFontStyle.fsBold];
+  FBtnStart := TButton.Create(Self);
+  FBtnStart.Parent := FPanel;
+  FBtnStart.SetBounds(230, 100, 150, 50);
+  FBtnStart.Text := 'Start Visuals';
+  FBtnStart.OnClick := OnBtnStartClick;
 
-  FTrackFPS := TTrackBar.Create(Self);
-  FTrackFPS.Parent := FLayout;
-  FTrackFPS.Position.Y := 170;
-  FTrackFPS.Align := TAlignLayout.Top;
-  FTrackFPS.Margins.Left := 120;
-  FTrackFPS.Margins.Right := 20;
-  FTrackFPS.Min := 15;
-  FTrackFPS.Max := 120;
-  FTrackFPS.Value := 60;
-  FTrackFPS.Frequency := 5;
-  FTrackFPS.OnChange := OnFPSChange;
+  // Control Panel: Color selection labels
+  FLabelAccent := TLabel.Create(Self);
+  FLabelAccent.Parent := FPanel;
+  FLabelAccent.SetBounds(20, 200, 130, 20);
+  FLabelAccent.Text := 'Peak Color (Accent):';
 
-  // Color Labels
-  with TLabel.Create(Self) do
-  begin
-    Parent := FLayout;
-    Position.Y := 200;
-    Text := 'Peak Color (Accent):';
-    Align := TAlignLayout.Top;
-    Margins.Left := 20;
-    Width := 130;
-  end;
+  FLabelBar := TLabel.Create(Self);
+  FLabelBar.Parent := FPanel;
+  FLabelBar.SetBounds(160, 200, 100, 20);
+  FLabelBar.Text := 'Bar Color:';
 
-  with TLabel.Create(Self) do
-  begin
-    Parent := FLayout;
-    Position.Y := 200;
-    Text := 'Bar Color:';
-    Align := TAlignLayout.Top;
-    Margins.Left := 160; // Position next to first label
-    Width := 100;
-  end;
-
-  // First Color Button (Accent/Peaks)
+  // Control Panel: Color buttons and status label
   FColorButton := TColorButton.Create(Self);
-  FColorButton.Parent := FLayout;
-  FColorButton.Position.Y := 220;
-  FColorButton.Align := TAlignLayout.Top;
-  FColorButton.Margins.Left := 20;
+  FColorButton.Parent := FPanel;
+  FColorButton.SetBounds(20, 230, 50, 25);
   FColorButton.Color := TAlphaColors.Cyan;
-  FColorButton.Width := 50;
-  FColorButton.Height := 25;
   FColorButton.Text := '';
   FColorButton.OnClick := OnColorButtonClick;
 
-  // Second Color Button (Bars)
   FColorButton2 := TColorButton.Create(Self);
-  FColorButton2.Parent := FLayout;
-  FColorButton2.Position.Y := 220;
-  FColorButton2.Align := TAlignLayout.Top;
-  FColorButton2.Margins.Left := 80; // Position next to first button
-  FColorButton2.Color := $FF008080; // Dark Teal default
-  FColorButton2.Width := 50;
-  FColorButton2.Height := 25;
+  FColorButton2.Parent := FPanel;
+  FColorButton2.SetBounds(160, 230, 50, 25);
+  FColorButton2.Color := $FF008080;
   FColorButton2.Text := '';
   FColorButton2.OnClick := OnColorButtonClick;
 
   FLabelStatus := TLabel.Create(Self);
-  FLabelStatus.Parent := FLayout;
-  FLabelStatus.Position.Y := 220;
+  FLabelStatus.Parent := FPanel;
+  FLabelStatus.SetBounds(240, 230, 150, 25);
   FLabelStatus.Text := 'Ready';
-  FLabelStatus.Align := TAlignLayout.Top;
-  FLabelStatus.Margins.Left := 140;
   FLabelStatus.TextAlign := TTextAlign.Leading;
 
-  FRightRowLayout := TLayout.Create(Self);
-  FRightRowLayout.Parent := FLayout;
-  FRightRowLayout.Position.Y := 255;
-  FRightRowLayout.Align := TAlignLayout.Top;
-  FRightRowLayout.Height := 50;
-  FRightRowLayout.HitTest := True;
+  // Control Panel: Sensitivity trackbar
+  FLabelSens := TLabel.Create(Self);
+  FLabelSens.Parent := FPanel;
+  FLabelSens.SetBounds(20, 280, 100, 20);
+  FLabelSens.Text := 'Sensitivity:';
 
-  FColorPicker := TColorPicker.Create(Self);
-  FColorPicker.Parent := FRightRowLayout;
-  FColorPicker.Align := TAlignLayout.Left;
-  FColorPicker.Margins.Left := 20;
-  FColorPicker.Color := TAlphaColors.Cyan;
+  FTrackSensitivity := TTrackBar.Create(Self);
+  FTrackSensitivity.Parent := FPanel;
+  FTrackSensitivity.SetBounds(20, 310, 300, 25);
+  FTrackSensitivity.Min := 10;
+  FTrackSensitivity.Max := 100;
+  FTrackSensitivity.Value := 25;
+  FTrackSensitivity.Frequency := 1;
+  FTrackSensitivity.OnChange := OnSensChange;
 
-  FBtnStart := TButton.Create(Self);
-  FBtnStart.Parent := FRightRowLayout;
-  FBtnStart.Text := 'Start Visuals';
-  FBtnStart.Align := TAlignLayout.Right;
-  FBtnStart.Margins.Right := 20;
-  FBtnStart.OnClick := OnBtnStartClick;
+  // Control Panel: FPS limit and peak visibility settings
+  FLabelFPS := TLabel.Create(Self);
+  FLabelFPS.Parent := FPanel;
+  FLabelFPS.SetBounds(340, 280, 100, 20);
+  FLabelFPS.Text := 'FPS Limit: 30';
+  FLabelFPS.Font.Style := [TFontStyle.fsBold];
 
-  FBassHandle := LoadLibrary('bass.dll');
-  if FBassHandle = 0 then
-  begin
-    FLabelStatus.Text := 'Error: bass.dll not found';
-    Exit;
-  end;
-  @BASS_Init := GetProcAddress(FBassHandle, PAnsiChar('BASS_Init'));
-  @BASS_Free := GetProcAddress(FBassHandle, PAnsiChar('BASS_Free'));
-  @BASS_RecordInit := GetProcAddress(FBassHandle, PAnsiChar('BASS_RecordInit'));
-  @BASS_RecordStart := GetProcAddress(FBassHandle, PAnsiChar('BASS_RecordStart'));
-  @BASS_RecordGetDeviceInfo := GetProcAddress(FBassHandle, PAnsiChar('BASS_RecordGetDeviceInfo'));
-  @BASS_RecordFree := GetProcAddress(FBassHandle, PAnsiChar('BASS_RecordFree'));
-  @BASS_ChannelStop := GetProcAddress(FBassHandle, PAnsiChar('BASS_ChannelStop'));
-  @BASS_ChannelGetData := GetProcAddress(FBassHandle, PAnsiChar('BASS_ChannelGetData'));
-  @BASS_ErrorGetCode := GetProcAddress(FBassHandle, PAnsiChar('BASS_ErrorGetCode'));
+  FTrackFPS := TTrackBar.Create(Self);
+  FTrackFPS.Parent := FPanel;
+  FTrackFPS.SetBounds(340, 310, 200, 25);
+  FTrackFPS.Min := 15;
+  FTrackFPS.Max := 120;
+  FTrackFPS.Value := 30;
+  FTrackFPS.Frequency := 5;
+  FTrackFPS.OnChange := OnFPSChange;
 
-  if Assigned(BASS_Init) then
-    BASS_Init(-1, 44100, 0, 0, nil);
+  FCheckPeaks := TCheckBox.Create(Self);
+  FCheckPeaks.Parent := FPanel;
+  FCheckPeaks.SetBounds(20, 350, 200, 25);
+  FCheckPeaks.Text := 'Show Falling Peaks';
+  FCheckPeaks.IsChecked := True;
+  FCheckPeaks.OnChange := OnPeaksChange;
+
+  // Initialize UI states to match default visualizer settings
+  OnSensChange(nil);
+  OnFPSChange(nil);
+  OnComboBackgroundChange(nil);
+  OnComboVisualChange(nil);
+  OnColorButtonClick(nil);
+  OnPeaksChange(nil);
 
   PopulateDevices;
 end;
 
-procedure TForm9.FormDestroy(Sender: TObject);
+procedure TForm9.PopulateDevices;
 begin
-  if Assigned(FTimer) then
-    FreeAndNil(FTimer);
-  if FRecordChannel <> 0 then
-    BASS_ChannelStop(FRecordChannel);
-  if FBassHandle <> 0 then
+  if Assigned(FVis) and Assigned(FVis.Audio) then
+    FVis.Audio.PopulateDevices(FComboDevice.Items);
+
+  if FComboDevice.Items.Count > 0 then
+    FComboDevice.ItemIndex := 0;
+end;
+
+procedure TForm9.StartVisuals;
+var
+  DevIndex: Integer;
+  ErrorMsg: string;
+begin
+  DevIndex := FComboDevice.ItemIndex;
+  if DevIndex = -1 then DevIndex := 0;
+
+  if FVis.Audio.StartRecording(DevIndex, ErrorMsg) then
   begin
-    BASS_RecordFree;
-    BASS_Free;
-    FreeLibrary(FBassHandle);
+    FBtnStart.Enabled := False;
+    FComboDevice.Enabled := False;
+    FLabelStatus.Text := 'Running...';
+    FVis.ActivateRendering;
+  end
+  else
+  begin
+    FLabelStatus.Text := 'Error: ' + ErrorMsg;
   end;
-  if Assigned(FVis) then
-    FreeAndNil(FVis);
+end;
+
+procedure TForm9.OnBtnStartClick(Sender: TObject);
+begin
+  StartVisuals;
+end;
+
+procedure TForm9.OnComboBackgroundChange(Sender: TObject);
+begin
+  if not Assigned(FVis) then Exit;
+  case FComboBackground.ItemIndex of
+    0: FVis.BackgroundType := btSolidBlack;
+    1: FVis.BackgroundType := btGradientBlobs;
+  end;
+end;
+
+procedure TForm9.OnComboVisualChange(Sender: TObject);
+begin
+  if not Assigned(FVis) then Exit;
+  case FComboVisual.ItemIndex of
+    0: FVis.VisualType := vtSpectrum;
+    1: FVis.VisualType := vtCircle;
+    2: FVis.VisualType := vtWave;
+    3: FVis.VisualType := vtColorDrops;
+  end;
 end;
 
 procedure TForm9.OnFPSChange(Sender: TObject);
@@ -310,147 +266,21 @@ begin
   begin
     if Sender = FColorButton then
     begin
-      // Button 1 was clicked -> Set Accent/Peaks
       FColorButton.Color := FColorPicker.Color;
       FVis.AccentColor := FColorPicker.Color;
     end
     else if Sender = FColorButton2 then
     begin
-      // Button 2 was clicked -> Set Bars
       FColorButton2.Color := FColorPicker.Color;
       FVis.BarColor := FColorPicker.Color;
     end;
   end;
 end;
 
-procedure TForm9.PopulateDevices;
-var
-  DevInfo: BASS_DEVICEINFO;
-  i: Integer;
+procedure TForm9.OnPeaksChange(Sender: TObject);
 begin
-  FComboDevice.Clear;
-  i := 0;
-  while BASS_RecordGetDeviceInfo(i, DevInfo) do
-  begin
-    if (DevInfo.flags and BASS_DEVICE_ENABLED) = BASS_DEVICE_ENABLED then
-      FComboDevice.Items.Add(string(AnsiString(DevInfo.name)));
-    Inc(i);
-  end;
-  if FComboDevice.Items.Count > 0 then
-    FComboDevice.ItemIndex := 0;
-end;
-
-procedure TForm9.StartVisuals;
-var
-  DevIndex: Integer;
-begin
-  if not Assigned(FVis) then
-  begin
-    FVis := TSkiaAVisualizer.Create(Self);
-    FVis.Parent := Self;
-    FVis.Align := TAlignLayout.Client;
-    if Assigned(FComboBackground) then
-      OnComboBackgroundChange(nil);
-  end;
-
-  FVis.UseExternalData := True;
-  OnSensChange(nil);
-  OnComboEffectChange(nil);
-
-  // Initialize colors from the buttons
-  if Assigned(FColorButton) then
-    FVis.AccentColor := FColorButton.Color;
-  if Assigned(FColorButton2) then
-    FVis.BarColor := FColorButton2.Color;
-
-  if FRecordChannel <> 0 then
-    BASS_ChannelStop(FRecordChannel);
-  BASS_RecordFree;
-  DevIndex := FComboDevice.ItemIndex;
-  if DevIndex = -1 then
-    DevIndex := 0;
-  if not BASS_RecordInit(DevIndex) then
-  begin
-    FLabelStatus.Text := 'Error: Cannot init device';
-    Exit;
-  end;
-  FRecordChannel := BASS_RecordStart(44100, 2, 0, nil, nil);
-  if FRecordChannel = 0 then
-  begin
-    FLabelStatus.Text := 'Error: Cannot start recording';
-    Exit;
-  end;
-
-  FBtnStart.Enabled := False;
-  FComboDevice.Enabled := False;
-  FLabelStatus.Text := 'Running...';
-  FTimer := TTimer.Create(Self);
-  FTimer.Interval := 30;
-  FTimer.OnTimer := OnTimer;
-end;
-
-procedure TForm9.OnBtnStartClick(Sender: TObject);
-begin
-  StartVisuals;
-end;
-
-procedure TForm9.OnComboEffectChange(Sender: TObject);
-begin
-  if not Assigned(FVis) then
-    Exit;
-  case FComboEffect.ItemIndex of
-    0:
-      FVis.VisualType := vtSpectrum;
-    1:
-      FVis.VisualType := vtCircle;
-    2:
-      FVis.VisualType := vtWave;
-    3:
-      FVis.VisualType := vtColorDrops;
-  end;
-end;
-
-procedure TForm9.OnComboBackgroundChange(Sender: TObject);
-begin
-  if not Assigned(FVis) then
-    Exit;
-  case FComboBackground.ItemIndex of
-    0:
-      FVis.BackgroundType := btGradientBlobs;
-    1:
-      FVis.BackgroundType := btSolidDark;
-    2:
-      FVis.BackgroundType := btSolidBlack;
-  end;
-end;
-
-procedure TForm9.OnTimer(Sender: TObject);
-var
-  BASS_Raw: array[0..1023] of Single;
-  Vis_Data: TFFTData;
-  BASS_Ret: DWORD;
-  I: Integer;
-begin
-  if (FRecordChannel = 0) or not Assigned(FVis) then
-    Exit;
-
-  BASS_Ret := BASS_ChannelGetData(FRecordChannel, @BASS_Raw, BASS_DATA_FFT2048);
-  if BASS_Ret = DWORD(-1) then
-    Exit;
-
-  for I := 0 to High(Vis_Data) do
-  begin
-    if IsNan(BASS_Raw[I]) or IsInfinite(BASS_Raw[I]) then
-      BASS_Raw[I] := 0;
-    if IsNan(FPrevFFTData[I]) or IsInfinite(FPrevFFTData[I]) then
-      FPrevFFTData[I] := 0;
-
-    Vis_Data[I] := (BASS_Raw[I] + FPrevFFTData[I]) * 0.5;
-    FPrevFFTData[I] := Vis_Data[I];
-  end;
-
-  FVis.UpdateAudioData(Vis_Data);
+  if Assigned(FVis) and Assigned(FCheckPeaks) then
+    FVis.ShowFallingPeaks := FCheckPeaks.IsChecked;
 end;
 
 end.
-

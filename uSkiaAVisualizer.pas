@@ -1,4 +1,4 @@
-{*******************************************************************************
+﻿{*******************************************************************************
   SkiaAudioVisualizer
 ********************************************************************************
   A high-performance, hardware-accelerated audio visualizer for Delphi FMX.
@@ -7,12 +7,18 @@
   - Multiple Visualization Modes: Spectrum (with Peaks), Circle, Waveform, Bass Rain.
   - Dynamic Backgrounds: Modular and stable.
 *******************************************************************************}
-{ Skia-Audio-Visualizer v0.2                                                   }
+{ Skia-Audio-Visualizer v0.3                                                   }
 { by Lara Miriam Tamy Reschke                                                  }
 {                                                                              }
 {------------------------------------------------------------------------------}
 {
  ----Latest Changes
+   v 0.3:
+   - Added ShowFallingPeaks property
+   - Smoothed bars and peaks to eliminate flickering
+   - Replaced heavy ImageFilter with hardware-accelerated MaskFilter
+   - Massive performance boost, runs now smooth even at dualcore...with 120fps
+     (but not at fullscreen)
    v 0.2:
    - Added slower falling Peaks to Spectrum
    - Added new TSkBackgroundType = btGradientBlobs, btSolidDark, btSolidBlack
@@ -24,24 +30,25 @@ unit uSkiaAVisualizer;
 interface
 
 uses
-  System.SysUtils, System.Types, System.Classes, System.Math,
-  System.Generics.Collections, System.UITypes, System.SyncObjs, FMX.Types,
-  FMX.Controls, FMX.Skia, System.Skia;
+  System.SysUtils, System.Types, System.Classes, System.Math, System.UITypes,
+  System.SyncObjs, FMX.Types, FMX.Controls, FMX.Skia, System.Skia,
+  Winapi.Windows;
 
 const
   MAX_FFT_DATA = 1024;
+  BASS_DEVICE_ENABLED = 1;
+  BASS_DATA_FFT2048 = $80000003;
 
 type
   TFFTData = array[0..MAX_FFT_DATA - 1] of Single;
 
   TSkVisualType = (vtSpectrum, vtCircle, vtWave, vtColorDrops);
 
-  TSkBackgroundType = (btGradientBlobs, btSolidDark, btSolidBlack);
+  TSkBackgroundType = (btGradientBlobs, btSolidBlack);
 
-  // Interfaces
   ISkVisualizerEffect = interface
     ['{A1B2C3D4-E5F6-4789-0011-223344556677}']
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
   end;
 
   ISkBackgroundEffect = interface
@@ -49,60 +56,109 @@ type
     procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Time: Double; const Data: TFFTData; const Sensitivity: Single; const AccentColor: TAlphaColor);
   end;
 
+  BASS_DEVICEINFO = record
+    name: PAnsiChar;
+    driver: PAnsiChar;
+    flags: DWORD;
+  end;
+
+  TBASS_Init = function(device: Integer; freq, flags: DWORD; win: HWND; cls: Pointer): Boolean; stdcall;
+
+  TBASS_Free = function: Boolean; stdcall;
+
+  TBASS_RecordInit = function(device: Integer): Boolean; stdcall;
+
+  TBASS_RecordStart = function(freq, chans, flags: DWORD; proc: Pointer; user: Pointer): DWORD; stdcall;
+
+  TBASS_RecordGetDeviceInfo = function(device: Integer; var info: BASS_DEVICEINFO): Boolean; stdcall;
+
+  TBASS_RecordFree = function: Boolean; stdcall;
+
+  TBASS_ChannelStop = function(handle: DWORD): Boolean; stdcall;
+
+  TBASS_ChannelGetData = function(handle: DWORD; buffer: Pointer; length: DWORD): DWORD; stdcall;
+
+  TBassAudioCapture = class
+  private
+    FBassHandle: HMODULE;
+    FRecordChannel: DWORD;
+    FDeviceID: Integer;
+    FInitialized: Boolean;
+    FSmoothedData: TFFTData;
+    BASS_Init: TBASS_Init;
+    BASS_Free: TBASS_Free;
+    BASS_RecordInit: TBASS_RecordInit;
+    BASS_RecordStart: TBASS_RecordStart;
+    BASS_RecordGetDeviceInfo: TBASS_RecordGetDeviceInfo;
+    BASS_RecordFree: TBASS_RecordFree;
+    BASS_ChannelStop: TBASS_ChannelStop;
+    BASS_ChannelGetData: TBASS_ChannelGetData;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function LoadLibrary: Boolean;
+    procedure PopulateDevices(List: TStrings);
+    function StartRecording(DeviceID: Integer; out ErrorMsg: string): Boolean;
+    procedure StopRecording;
+    function GetFFTData(out Data: TFFTData): Boolean;
+  end;
+
   TSkiaAVisualizer = class(TSkCustomControl)
   private
     FThread: TThread;
-    FActive: Boolean;
     FLock: TCriticalSection;
     FTime: Double;
+    FLastDrawTime: Double;
     FVisualType: TSkVisualType;
     FBackgroundType: TSkBackgroundType;
     FCurrentEffect: ISkVisualizerEffect;
     FCurrentBackground: ISkBackgroundEffect;
-    FAudioData: TFFTData;
-    FUseExternalData: Boolean;
     FSensitivity: Single;
     FTargetFPS: Integer;
     FAccentColor: TAlphaColor;
     FBarColor: TAlphaColor;
-    FPrevWidth: Single;
-    FPrevHeight: Single;
+    FMaxBars: Integer;
+    FShowFallingPeaks: Boolean;
+    FAudio: TBassAudioCapture;
+    FAudioData: TFFTData;
+    FIsAudioValid: Boolean;
 
     procedure SetTargetFPS(const Value: Integer);
     procedure SetAccentColor(const Value: TAlphaColor);
     procedure SetBarColor(const Value: TAlphaColor);
+    procedure SetBackgroundType(const Value: TSkBackgroundType);
+    procedure SetVisualType(const Value: TSkVisualType);
+    procedure SetMaxBars(const Value: Integer);
+    procedure SetShowFallingPeaks(const Value: Boolean);
+    procedure CreateEffect;
+    procedure CreateBackground;
     procedure UpdateLogic(DeltaSec: Double);
     procedure SafeInvalidate;
     procedure StartThread;
     procedure StopThread;
-    procedure SetVisualType(const Value: TSkVisualType);
-    procedure SetBackgroundType(const Value: TSkBackgroundType);
-    procedure CreateEffect;
-    procedure CreateBackground;
-    procedure DrawDynamicBackground(const ACanvas: ISkCanvas; const ADest: TRectF; const Time: Double; const Data: TFFTData; const Sensitivity: Single; const AccentColor: TAlphaColor);
-
   protected
-    procedure Resize; override;
     procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const AOpacity: Single); override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
 
+    procedure ActivateRendering;
+
+    property Audio: TBassAudioCapture read FAudio;
     property TargetFPS: Integer read FTargetFPS write SetTargetFPS;
     property VisualType: TSkVisualType read FVisualType write SetVisualType;
     property BackgroundType: TSkBackgroundType read FBackgroundType write SetBackgroundType;
-    property UseExternalData: Boolean read FUseExternalData write FUseExternalData;
     property Sensitivity: Single read FSensitivity write FSensitivity;
-    property AccentColor: TAlphaColor read FAccentColor write SetAccentColor; // Used for Peaks/Highlights
-    property BarColor: TAlphaColor read FBarColor write SetBarColor; // Used for Bars
-
-    procedure UpdateAudioData(const NewData: TFFTData);
+    property AccentColor: TAlphaColor read FAccentColor write SetAccentColor;
+    property BarColor: TAlphaColor read FBarColor write SetBarColor;
+    property MaxBars: Integer read FMaxBars write SetMaxBars;
+    property ShowFallingPeaks: Boolean read FShowFallingPeaks write SetShowFallingPeaks;
   end;
 
 implementation
 
 {==============================================================================
-  BACKGROUND EFFECTS CLASSES
+  BACKGROUND EFFECTS
 ==============================================================================}
 
 type
@@ -123,67 +179,62 @@ var
   Color1, Color2, Color3: TAlphaColor;
   BassAvg: Single;
 begin
+  // Calculate average bass energy to drive the background animation
   BassAvg := 0;
   if Length(Data) > 0 then
     for I := 0 to Min(9, High(Data)) do
       BassAvg := BassAvg + Data[I];
-  BassAvg := BassAvg / Min(10, Length(Data));
+  BassAvg := Min(1.0, BassAvg / Min(10, Length(Data)));
 
   SetLength(Colors, 2);
   SetLength(Positions, 2);
-  Colors[0] := $FF050020;
-  Colors[1] := $FF000000;
   Positions[0] := 0.0;
   Positions[1] := 1.0;
+
+  // Draw the dark base gradient
+  Colors[0] := $FF050020;
+  Colors[1] := $FF000000;
   Gradient := TSkShader.MakeGradientLinear(PointF(0, 0), PointF(0, ADest.Height), Colors, Positions, TSkTileMode.Clamp);
   BgPaint := TSkPaint.Create;
   BgPaint.Shader := Gradient;
+  BgPaint.Style := TSkPaintStyle.Fill;
   ACanvas.DrawRect(ADest, BgPaint);
 
   Center := ADest.CenterPoint;
   Color1 := $FF00FFAA;
   Color2 := $FFAA00FF;
   Color3 := $FFFF0055;
+
+  // Use MaskFilter for high-performance blur over ImageFilter
+  BgPaint := TSkPaint.Create;
   BgPaint.Style := TSkPaintStyle.Fill;
-  BgPaint.ImageFilter := TSkImageFilter.MakeBlur(40 + (BassAvg * 20), 40 + (BassAvg * 20));
+  BgPaint.AntiAlias := True;
+  BgPaint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 80 + (BassAvg * 40));
+
   Offset1 := Sin(Time * 0.7) * (ADest.Height * 0.3);
   Offset2 := Cos(Time * 0.9) * (ADest.Height * 0.4);
 
+  // Draw the first animated blob
   R := (ADest.Width * 0.6) + (Sin(Time) * 20);
   Colors[0] := Color1;
   Colors[1] := TAlphaColors.Null;
   Gradient := TSkShader.MakeGradientRadial(PointF(Center.X - (ADest.Width * 0.2), ADest.Bottom - Offset1), R, Colors, Positions, TSkTileMode.Clamp);
   BgPaint.Shader := Gradient;
-  ACanvas.DrawRect(ADest, BgPaint);
+  ACanvas.DrawCircle(PointF(Center.X - (ADest.Width * 0.2), ADest.Bottom - Offset1), R, BgPaint);
 
+  // Draw the second animated blob
   R := (ADest.Width * 0.5) + (Cos(Time * 1.2) * 20);
   Colors[0] := Color2;
   Gradient := TSkShader.MakeGradientRadial(PointF(Center.X + (ADest.Width * 0.2), ADest.Bottom - Offset2), R, Colors, Positions, TSkTileMode.Clamp);
   BgPaint.Shader := Gradient;
-  ACanvas.DrawRect(ADest, BgPaint);
+  ACanvas.DrawCircle(PointF(Center.X + (ADest.Width * 0.2), ADest.Bottom - Offset2), R, BgPaint);
 
+  // Draw the third animated blob
   R := (ADest.Width * 0.4);
   Colors[0] := Color3;
   Gradient := TSkShader.MakeGradientRadial(PointF(Center.X + (Sin(Time * 0.5) * (ADest.Width * 0.5)), ADest.Bottom - (ADest.Height * 0.2)), R, Colors, Positions, TSkTileMode.Clamp);
   BgPaint.Shader := Gradient;
-  ACanvas.DrawRect(ADest, BgPaint);
-end;
-
-type
-  TSkBgSolidDark = class(TInterfacedObject, ISkBackgroundEffect)
-  public
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Time: Double; const Data: TFFTData; const Sensitivity: Single; const AccentColor: TAlphaColor);
-  end;
-
-procedure TSkBgSolidDark.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Time: Double; const Data: TFFTData; const Sensitivity: Single; const AccentColor: TAlphaColor);
-var
-  BgPaint: ISkPaint;
-begin
-  BgPaint := TSkPaint.Create;
-  BgPaint.Style := TSkPaintStyle.Fill;
-  BgPaint.ImageFilter := nil;
-  BgPaint.Color := $FF050020;
-  ACanvas.DrawRect(ADest, BgPaint);
+  ACanvas.DrawCircle(PointF(Center.X + (Sin(Time * 0.5) * (ADest.Width * 0.5)), ADest.Bottom - (ADest.Height * 0.2)), R, BgPaint);
 end;
 
 type
@@ -198,151 +249,155 @@ var
 begin
   BgPaint := TSkPaint.Create;
   BgPaint.Style := TSkPaintStyle.Fill;
-  BgPaint.ImageFilter := nil;
   BgPaint.Color := $FF000000;
   ACanvas.DrawRect(ADest, BgPaint);
 end;
 
-
 {==============================================================================
-  VISUALIZATION EFFECTS CLASSES
+  VISUALIZER EFFECTS
 ==============================================================================}
 
-{------------------------------------------------------------------------------
-  EFFECT 1: SPECTRUM (NEON BARS + PEAK DOTS - STRONG GLOW)
-------------------------------------------------------------------------------}
 type
   TSkEffectSpectrum = class(TInterfacedObject, ISkVisualizerEffect)
   private
     FPeaks: array of Single;
-    FInitialized: Boolean;
   public
     constructor Create;
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
   end;
 
 constructor TSkEffectSpectrum.Create;
 begin
   inherited Create;
   SetLength(FPeaks, 512);
-  FInitialized := False;
 end;
 
-procedure TSkEffectSpectrum.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+procedure TSkEffectSpectrum.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
 var
   I: Integer;
-  BarWidth: Single;
-  X, Y, H, PeakY: Single;
-  Paint, GlowPaint, GlowPaintPeaks, PeakPaint: ISkPaint;
-  Path: ISkPathBuilder;
+  BarWidth, H, RawH, X, Y, PeakY, FFTIndex: Single;
+  BarGlowPaint, BarSolidPaint, PeakGlowPaint, PeakSolidPaint: ISkPaint;
+  BarPathBuilder, PeakPathBuilder: ISkPathBuilder;
+  BarPath, PeakPath: ISkPath;
   R: TRectF;
   BarsToDraw: Integer;
+  DeltaTime, FallSpeed: Single;
 begin
   if (ADest.Width <= 0) or (ADest.Height <= 0) then
     Exit;
 
-  Path := TSkPathBuilder.Create;
+  BarsToDraw := 64; // Default bar count for spectrum mode
+  BarWidth := ADest.Width / BarsToDraw;
 
-  BarWidth := 6.0;
-  BarsToDraw := Trunc(ADest.Width / BarWidth);
-  if BarsToDraw > 512 then
-    BarsToDraw := 512;
+  if Length(FPeaks) < BarsToDraw then
+    SetLength(FPeaks, BarsToDraw);
 
-  if BarWidth > 0 then
-    BarWidth := ADest.Width / BarsToDraw;
+  BarPathBuilder := TSkPathBuilder.Create;
+  PeakPathBuilder := TSkPathBuilder.Create;
 
-  if not FInitialized then
-  begin
-    for I := 0 to 511 do
-      FPeaks[I] := 0;
-    FInitialized := True;
-  end;
+  DeltaTime := 0.016; // Fixed delta time for thread-based updates
+  FallSpeed := ADest.Height * 0.15;
 
   for I := 0 to BarsToDraw - 1 do
   begin
-    H := Power(Min(1.0, Data[I]), 0.8) * ADest.Height * 0.9;
+    FFTIndex := (I / BarsToDraw) * 512;
+    if FFTIndex >= MAX_FFT_DATA then
+      FFTIndex := MAX_FFT_DATA - 1;
 
+    RawH := Power(Min(1.0, Data[Trunc(FFTIndex)] * Sensitivity), 0.8) * ADest.Height * 1.0;
+    if RawH > ADest.Height then
+      RawH := ADest.Height;
+    if RawH < 0 then
+      RawH := 0;
+
+    // Apply smoothing to bar transitions
+    H := (FPeaks[I] * 0.6) + (RawH * 0.4);
     if H > ADest.Height then
       H := ADest.Height;
-    if H < 0 then
-      H := 0;
-    if IsNan(H) or IsInfinite(H) then
-      H := 0;
-
-    // Peak Logic
-    if H > FPeaks[I] then
-      FPeaks[I] := H
-    else
-      FPeaks[I] := FPeaks[I] - (ADest.Height * 0.003);
-
-    if FPeaks[I] < 0 then
-      FPeaks[I] := 0;
 
     X := I * BarWidth;
     Y := ADest.Bottom - H;
 
-    // Draw Bar
-    R := TRectF.Create(X, Y, X + BarWidth - 1.5, ADest.Bottom);
+    if BarWidth > 5 then
+      R := TRectF.Create(X, Y, X + BarWidth - 2.0, ADest.Bottom)
+    else
+      R := TRectF.Create(X, Y, X + BarWidth - 1.0, ADest.Bottom);
+
     if (R.Width > 0) and (R.Height > 0) then
-      Path.AddRect(R);
-  end;
+      BarPathBuilder.AddRect(R);
 
-  // --- STEP 1: DRAW BARS GLOW ---
-  GlowPaint := TSkPaint.Create;
-  GlowPaint.Style := TSkPaintStyle.Fill;
-  GlowPaint.Color := BarColor;
-  GlowPaint.ImageFilter := TSkImageFilter.MakeBlur(20, 20);
-  GlowPaint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Solid, 12);
-  ACanvas.DrawPath(Path.Snapshot, GlowPaint);
+    // Falling peaks logic
+    if H > FPeaks[I] then
+      FPeaks[I] := (FPeaks[I] * 0.5) + (H * 0.5)
+    else
+    begin
+      FPeaks[I] := FPeaks[I] - (FallSpeed * DeltaTime);
+      if FPeaks[I] < 0 then
+        FPeaks[I] := 0;
+    end;
 
-  // --- STEP 2: DRAW SOLID BARS ---
-  Paint := TSkPaint.Create;
-  Paint.Style := TSkPaintStyle.Fill;
-  Paint.Color := BarColor;
-  ACanvas.DrawPath(Path.Snapshot, Paint);
-
-  // --- STEP 3: DRAW PEAKS GLOW ---
-  Path := TSkPathBuilder.Create;
-  for I := 0 to BarsToDraw - 1 do
-  begin
     PeakY := ADest.Bottom - FPeaks[I];
-    X := I * BarWidth;
-    R := TRectF.Create(X, PeakY - 3, X + BarWidth - 1.5, PeakY + 1);
-    if (R.Width > 0) then
-      Path.AddRect(R);
+
+    if ShowPeaks then
+    begin
+      if BarWidth > 5 then
+        R := TRectF.Create(X, PeakY - 3, X + BarWidth - 2.0, PeakY + 1)
+      else
+        R := TRectF.Create(X, PeakY - 3, X + BarWidth - 1.0, PeakY + 1);
+
+      if (R.Width > 0) and (R.Height > 0) then
+        PeakPathBuilder.AddRect(R);
+    end;
   end;
 
-  GlowPaintPeaks := TSkPaint.Create;
-  GlowPaintPeaks.Style := TSkPaintStyle.Fill;
-  GlowPaintPeaks.Color := AccentColor;
-  GlowPaintPeaks.ImageFilter := TSkImageFilter.MakeBlur(15, 15);
-  ACanvas.DrawPath(Path.Snapshot, GlowPaintPeaks);
+  BarPath := BarPathBuilder.Snapshot;
+  PeakPath := PeakPathBuilder.Snapshot;
 
-  // --- STEP 4: DRAW SOLID PEAKS ---
-  PeakPaint := TSkPaint.Create;
-  PeakPaint.Style := TSkPaintStyle.Fill;
-  PeakPaint.Color := AccentColor;
-  ACanvas.DrawPath(Path.Snapshot, PeakPaint);
+  // Draw bars with glow and solid fill
+  if not BarPath.IsEmpty then
+  begin
+    BarGlowPaint := TSkPaint.Create;
+    BarGlowPaint.Style := TSkPaintStyle.Fill;
+    BarGlowPaint.Color := BarColor;
+    BarGlowPaint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 10);
+    ACanvas.DrawPath(BarPath, BarGlowPaint);
+
+    BarSolidPaint := TSkPaint.Create;
+    BarSolidPaint.Style := TSkPaintStyle.Fill;
+    BarSolidPaint.Color := BarColor;
+    ACanvas.DrawPath(BarPath, BarSolidPaint);
+  end;
+
+  // Draw peaks with glow and solid fill
+  if not PeakPath.IsEmpty then
+  begin
+    PeakGlowPaint := TSkPaint.Create;
+    PeakGlowPaint.Style := TSkPaintStyle.Fill;
+    PeakGlowPaint.Color := AccentColor;
+    PeakGlowPaint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 6);
+    ACanvas.DrawPath(PeakPath, PeakGlowPaint);
+
+    PeakSolidPaint := TSkPaint.Create;
+    PeakSolidPaint.Style := TSkPaintStyle.Fill;
+    PeakSolidPaint.Color := AccentColor;
+    ACanvas.DrawPath(PeakPath, PeakSolidPaint);
+  end;
 end;
 
-
-{------------------------------------------------------------------------------
-  EFFECT 2: CIRCLE SCOPE
-------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
 type
   TSkEffectCircle = class(TInterfacedObject, ISkVisualizerEffect)
   public
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
   end;
 
-procedure TSkEffectCircle.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+procedure TSkEffectCircle.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
 var
   I: Integer;
   Angle, Radius, BaseRadius: Single;
   CenterX, CenterY: Single;
-  Pt: TPointF;
-  StartPoint: TPointF;
-  Paint, GlowPaint: ISkPaint;
+  Pt, StartPoint: TPointF;
+  GlowPaint, Paint: ISkPaint;
   Path: ISkPathBuilder;
   DataIdx: Integer;
 begin
@@ -353,6 +408,7 @@ begin
   BaseRadius := Min(ADest.Width, ADest.Height) * 0.15;
   Path := TSkPathBuilder.Create;
 
+  // Build the circular waveform path
   for I := 0 to 359 do
   begin
     Angle := DegToRad(I);
@@ -377,60 +433,60 @@ begin
   end;
   Path.LineTo(StartPoint);
 
+  // Draw the glowing outer circle
   GlowPaint := TSkPaint.Create;
   GlowPaint.Style := TSkPaintStyle.Stroke;
   GlowPaint.StrokeWidth := 4.0;
   GlowPaint.Color := AccentColor;
-  GlowPaint.ImageFilter := TSkImageFilter.MakeBlur(6, 6);
+  GlowPaint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 6);
   GlowPaint.StrokeCap := TSkStrokeCap.Round;
   ACanvas.DrawPath(Path.Snapshot, GlowPaint);
 
+  // Draw the solid inner circle
   Paint := TSkPaint.Create;
   Paint.Style := TSkPaintStyle.Stroke;
   Paint.StrokeWidth := 2.0;
-  Paint.Color := BarColor; // Using BarColor for the inner line
+  Paint.Color := BarColor;
   Paint.StrokeCap := TSkStrokeCap.Round;
   ACanvas.DrawPath(Path.Snapshot, Paint);
 end;
 
-{------------------------------------------------------------------------------
-  EFFECT 3: WAVEFORM
-------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
 type
   TSkEffectWave = class(TInterfacedObject, ISkVisualizerEffect)
   public
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
   end;
 
-procedure TSkEffectWave.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+procedure TSkEffectWave.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
 var
   I: Integer;
   X, Y, CenterY: Single;
-  Val: Single;
+  Val, DataVal: Single;
   Paint: ISkPaint;
   Path: ISkPathBuilder;
-  DataVal: Single;
 begin
+  if (ADest.Width <= 0) or (ADest.Height <= 0) then
+    Exit;
+
   Paint := TSkPaint.Create;
   Paint.Style := TSkPaintStyle.Stroke;
-  Paint.StrokeWidth := 2.0;
-  Paint.Color := AccentColor; // Waveform uses AccentColor primarily
+  Paint.StrokeWidth := 3.0;
+  Paint.Color := AccentColor;
   Paint.AntiAlias := True;
-  Paint.ImageFilter := TSkImageFilter.MakeBlur(2, 2);
-  Path := TSkPathBuilder.Create;
+  Paint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 3);
 
-  if ADest.Height <= 0 then
-    Exit;
-  if ADest.Width <= 0 then
-    Exit;
+  Path := TSkPathBuilder.Create;
   CenterY := ADest.Top + (ADest.Height / 2);
 
+  // Build the waveform path based on FFT data
   for I := 2 to MAX_FFT_DATA - 1 do
   begin
     X := ADest.Left + (I / MAX_FFT_DATA) * ADest.Width;
     DataVal := Data[I];
     if IsNan(DataVal) or IsInfinite(DataVal) then
       DataVal := 0.0;
+
     Val := DataVal * Sensitivity;
     if Val > 1.0 then
       Val := 1.0;
@@ -442,19 +498,18 @@ begin
     else
       Path.LineTo(PointF(X, Y));
   end;
+
   ACanvas.DrawPath(Path.Snapshot, Paint);
 end;
 
-{------------------------------------------------------------------------------
-  EFFECT 4: CHAOTIC BASS RAIN (COLOR DROPS)
-------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
 type
   TSkEffectColorDrops = class(TInterfacedObject, ISkVisualizerEffect)
   public
-    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+    procedure Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
   end;
 
-procedure TSkEffectColorDrops.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor);
+procedure TSkEffectColorDrops.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const Data: TFFTData; const Time: Double; const Sensitivity: Single; const AccentColor: TAlphaColor; const BarColor: TAlphaColor; const ShowPeaks: Boolean);
 var
   I, Count: Integer;
   X, Y, Radius, BassEnergy, DropSpeed: Single;
@@ -464,6 +519,7 @@ begin
   Paint.Style := TSkPaintStyle.Fill;
   Paint.AntiAlias := True;
 
+  // Calculate bass energy to drive drop size and speed
   BassEnergy := 0;
   for I := 0 to 19 do
     BassEnergy := BassEnergy + Data[I];
@@ -473,10 +529,13 @@ begin
   if BassEnergy > 1.2 then
     BassEnergy := 1.2;
 
-  Paint.ImageFilter := TSkImageFilter.MakeBlur(2 + (BassEnergy * 20), 2 + (BassEnergy * 20));
+  // Use MaskFilter for particle blur effects
+  Paint.MaskFilter := TSkMaskFilter.MakeBlur(TSkBlurStyle.Normal, 2 + (BassEnergy * 15));
+
   DropSpeed := 100 + (BassEnergy * 300);
   Count := 50;
 
+  // Draw individual color drops
   for I := 0 to Count - 1 do
   begin
     X := Sin((I * 132.5) + (Time * 0.5)) * (ADest.Width * 0.45) + ADest.CenterPoint.X;
@@ -484,16 +543,18 @@ begin
     Radius := 2 + Abs(Sin(I * 45));
     Radius := Radius + (BassEnergy * 30) + (Data[I mod 64] * Sensitivity * 10);
 
+    // Alternate colors based on bass energy
     if BassEnergy > 0.4 then
     begin
       Paint.Color := AccentColor;
-      Paint.Alpha := Round(BassEnergy * 180);
+      Paint.Alpha := Trunc(BassEnergy * 180);
     end
     else
     begin
-      Paint.Color := BarColor; // Using BarColor for normal drops
-      Paint.Alpha := Round(50 + (BassEnergy * 200));
+      Paint.Color := BarColor;
+      Paint.Alpha := Trunc(50 + (BassEnergy * 200));
     end;
+
     if Radius < 1 then
       Radius := 1;
     ACanvas.DrawCircle(PointF(X, Y), Radius, Paint);
@@ -501,8 +562,170 @@ begin
 end;
 
 {==============================================================================
-  MAIN COMPONENT: TSkiaAVisualizer
+  BASS AUDIO
 ==============================================================================}
+
+constructor TBassAudioCapture.Create;
+begin
+  inherited Create;
+  FBassHandle := 0;
+  FRecordChannel := 0;
+  FDeviceID := -1;
+  FInitialized := False;
+  FillChar(FSmoothedData, SizeOf(FSmoothedData), 0);
+end;
+
+destructor TBassAudioCapture.Destroy;
+begin
+  StopRecording;
+  if FBassHandle <> 0 then
+  begin
+    if Assigned(BASS_Free) then
+      BASS_Free;
+    FreeLibrary(FBassHandle);
+  end;
+  inherited;
+end;
+
+function TBassAudioCapture.LoadLibrary: Boolean;
+begin
+  FBassHandle := Winapi.Windows.LoadLibrary('bass.dll');
+  Result := FBassHandle <> 0;
+  if Result then
+  begin
+    @BASS_Init := GetProcAddress(FBassHandle, 'BASS_Init');
+    @BASS_Free := GetProcAddress(FBassHandle, 'BASS_Free');
+    @BASS_RecordInit := GetProcAddress(FBassHandle, 'BASS_RecordInit');
+    @BASS_RecordStart := GetProcAddress(FBassHandle, 'BASS_RecordStart');
+    @BASS_RecordGetDeviceInfo := GetProcAddress(FBassHandle, 'BASS_RecordGetDeviceInfo');
+    @BASS_RecordFree := GetProcAddress(FBassHandle, 'BASS_RecordFree');
+    @BASS_ChannelStop := GetProcAddress(FBassHandle, 'BASS_ChannelStop');
+    @BASS_ChannelGetData := GetProcAddress(FBassHandle, 'BASS_ChannelGetData');
+
+    if Assigned(BASS_Init) then
+      BASS_Init(-1, 44100, 0, 0, nil);
+  end;
+end;
+
+procedure TBassAudioCapture.PopulateDevices(List: TStrings);
+var
+  DevInfo: BASS_DEVICEINFO;
+  i: Integer;
+begin
+  if not Assigned(BASS_RecordGetDeviceInfo) then
+    Exit;
+  List.Clear;
+  i := 0;
+  while BASS_RecordGetDeviceInfo(i, DevInfo) do
+  begin
+    if (DevInfo.flags and BASS_DEVICE_ENABLED) = BASS_DEVICE_ENABLED then
+      List.Add(string(AnsiString(DevInfo.name)));
+    Inc(i);
+  end;
+end;
+
+function TBassAudioCapture.StartRecording(DeviceID: Integer; out ErrorMsg: string): Boolean;
+begin
+  ErrorMsg := '';
+  if FRecordChannel <> 0 then
+    StopRecording;
+  if not Assigned(BASS_RecordInit) then
+  begin
+    ErrorMsg := 'BASS not loaded.';
+    Exit(False);
+  end;
+  FDeviceID := DeviceID;
+  if not BASS_RecordInit(FDeviceID) then
+  begin
+    ErrorMsg := 'Cannot init device.';
+    Exit(False);
+  end;
+  FRecordChannel := BASS_RecordStart(44100, 2, 0, nil, nil);
+  if FRecordChannel = 0 then
+  begin
+    ErrorMsg := 'Cannot start recording.';
+    Exit(False);
+  end;
+  FInitialized := True;
+  Result := True;
+end;
+
+procedure TBassAudioCapture.StopRecording;
+begin
+  if FRecordChannel <> 0 then
+  begin
+    if Assigned(BASS_ChannelStop) then
+      BASS_ChannelStop(FRecordChannel);
+    FRecordChannel := 0;
+  end;
+  if Assigned(BASS_RecordFree) then
+    BASS_RecordFree;
+  FInitialized := False;
+end;
+
+function TBassAudioCapture.GetFFTData(out Data: TFFTData): Boolean;
+var
+  RawData: array[0..MAX_FFT_DATA - 1] of Single;
+  Ret: DWORD;
+  i: Integer;
+  SmoothingFactor: Single;
+begin
+  Result := False;
+  if (FRecordChannel = 0) or not Assigned(BASS_ChannelGetData) then
+    Exit;
+  Ret := BASS_ChannelGetData(FRecordChannel, @RawData, BASS_DATA_FFT2048);
+  if Ret = DWORD(-1) then
+    Exit;
+
+  // Apply smoothing to FFT data to prevent jittery visuals
+  SmoothingFactor := 0.8;
+  for i := 0 to MAX_FFT_DATA - 1 do
+  begin
+    if IsNan(RawData[i]) or IsInfinite(RawData[i]) then
+      RawData[i] := 0;
+    if RawData[i] > FSmoothedData[i] then
+      FSmoothedData[i] := RawData[i]
+    else
+      FSmoothedData[i] := (FSmoothedData[i] * SmoothingFactor) + (RawData[i] * (1.0 - SmoothingFactor));
+    Data[i] := FSmoothedData[i];
+  end;
+  Result := True;
+end;
+
+{==============================================================================
+  VISUALIZER
+==============================================================================}
+
+constructor TSkiaAVisualizer.Create(AOwner: TComponent);
+begin
+  inherited Create(AOwner);
+  FLock := TCriticalSection.Create;
+  Align := TAlignLayout.Client;
+  HitTest := True;
+  FThread := nil;
+  FTime := 0;
+  FLastDrawTime := 0;
+  FVisualType := vtSpectrum;
+  FBackgroundType := btGradientBlobs;
+  FSensitivity := 2.5;
+  FAccentColor := $FF00FFFF;
+  FBarColor := $FF008080;
+  FMaxBars := 64;
+  FShowFallingPeaks := True;
+  FillChar(FAudioData, SizeOf(FAudioData), 0);
+  FAudio := TBassAudioCapture.Create;
+  FAudio.LoadLibrary;
+  CreateEffect;
+  CreateBackground;
+end;
+
+destructor TSkiaAVisualizer.Destroy;
+begin
+  StopThread;
+  FreeAndNil(FAudio);
+  FreeAndNil(FLock);
+  inherited;
+end;
 
 procedure TSkiaAVisualizer.SetAccentColor(const Value: TAlphaColor);
 begin
@@ -514,7 +737,8 @@ begin
     finally
       FLock.Release;
     end;
-    Redraw;
+    if Assigned(FThread) then
+      Redraw;
   end;
 end;
 
@@ -528,20 +752,25 @@ begin
     finally
       FLock.Release;
     end;
-    Redraw;
+    if Assigned(FThread) then
+      Redraw;
   end;
 end;
 
-{------------------------------------------------------------------------------
-  DYNAMIC BACKGROUND RENDERER (SIMPLIFIED)
-------------------------------------------------------------------------------}
-procedure TSkiaAVisualizer.DrawDynamicBackground(const ACanvas: ISkCanvas; const ADest: TRectF; const Time: Double; const Data: TFFTData; const Sensitivity: Single; const AccentColor: TAlphaColor);
+procedure TSkiaAVisualizer.SetBackgroundType(const Value: TSkBackgroundType);
 begin
-  if not Assigned(FCurrentBackground) then
-    CreateBackground;
-
-  if Assigned(FCurrentBackground) then
-    FCurrentBackground.Draw(ACanvas, ADest, Time, Data, Sensitivity, AccentColor);
+  if FBackgroundType <> Value then
+  begin
+    FLock.Acquire;
+    try
+      FBackgroundType := Value;
+      CreateBackground;
+    finally
+      FLock.Release;
+    end;
+    if Assigned(FThread) then
+      Redraw;
+  end;
 end;
 
 procedure TSkiaAVisualizer.SetVisualType(const Value: TSkVisualType);
@@ -555,22 +784,42 @@ begin
     finally
       FLock.Release;
     end;
-    Redraw;
+    if Assigned(FThread) then
+      Redraw;
   end;
 end;
 
-procedure TSkiaAVisualizer.SetBackgroundType(const Value: TSkBackgroundType);
+procedure TSkiaAVisualizer.SetMaxBars(const Value: Integer);
 begin
-  if FBackgroundType <> Value then
+  if FMaxBars <> Value then
   begin
     FLock.Acquire;
     try
-      FBackgroundType := Value;
-      FCurrentBackground := nil;
+      FMaxBars := Value;
+      if FMaxBars < 1 then
+        FMaxBars := 1;
+      if FMaxBars > MAX_FFT_DATA then
+        FMaxBars := MAX_FFT_DATA;
     finally
       FLock.Release;
     end;
-    Redraw;
+    if Assigned(FThread) then
+      Redraw;
+  end;
+end;
+
+procedure TSkiaAVisualizer.SetShowFallingPeaks(const Value: Boolean);
+begin
+  if FShowFallingPeaks <> Value then
+  begin
+    FLock.Acquire;
+    try
+      FShowFallingPeaks := Value;
+    finally
+      FLock.Release;
+    end;
+    if Assigned(FThread) then
+      Redraw;
   end;
 end;
 
@@ -586,7 +835,7 @@ begin
     vtColorDrops:
       FCurrentEffect := TSkEffectColorDrops.Create;
   else
-    FCurrentEffect := nil;
+    FCurrentEffect := TSkEffectSpectrum.Create;
   end;
 end;
 
@@ -595,8 +844,6 @@ begin
   case FBackgroundType of
     btGradientBlobs:
       FCurrentBackground := TSkBgGradientBlobs.Create;
-    btSolidDark:
-      FCurrentBackground := TSkBgSolidDark.Create;
     btSolidBlack:
       FCurrentBackground := TSkBgSolidBlack.Create;
   else
@@ -604,29 +851,18 @@ begin
   end;
 end;
 
-{------------------------------------------------------------------------------
-  INTERNAL LOGIC & THREADING
-------------------------------------------------------------------------------}
-procedure TSkiaAVisualizer.UpdateLogic(DeltaSec: Double);
-var
-  I: Integer;
-  LocalTime: Double;
+procedure TSkiaAVisualizer.SetTargetFPS(const Value: Integer);
 begin
-  if not FActive then
-    Exit;
+  if FTargetFPS <> Value then
+    FTargetFPS := Value;
+end;
+
+procedure TSkiaAVisualizer.UpdateLogic(DeltaSec: Double);
+begin
+  FIsAudioValid := FAudio.GetFFTData(FAudioData);
   FLock.Acquire;
   try
     FTime := FTime + DeltaSec;
-    LocalTime := FTime;
-    if not FUseExternalData then
-    begin
-      for I := 0 to MAX_FFT_DATA - 1 do
-      begin
-        FAudioData[I] := (Sin((I * 0.1) + (LocalTime * 5.0)) * 0.5) + 0.5;
-        if (Frac(LocalTime) < 0.2) and (I < 50) then
-          FAudioData[I] := 1.0;
-      end;
-    end;
   finally
     FLock.Release;
   end;
@@ -640,9 +876,7 @@ begin
     procedure
     begin
       if not (csDestroying in ComponentState) and Assigned(Self) then
-      begin
         Self.Redraw;
-      end;
     end);
 end;
 
@@ -664,13 +898,8 @@ begin
         if DeltaMS = 0 then
           DeltaMS := 1;
         LastTime := NowTime;
-
-        if FActive then
-        begin
-          UpdateLogic(DeltaMS / 1000);
-          SafeInvalidate;
-        end;
-
+        UpdateLogic(DeltaMS / 1000);
+        SafeInvalidate;
         if FTargetFPS > 0 then
           SleepTime := Round(1000 / FTargetFPS)
         else
@@ -682,106 +911,58 @@ begin
   FThread.Start;
 end;
 
-procedure TSkiaAVisualizer.SetTargetFPS(const Value: Integer);
-begin
-  if FTargetFPS <> Value then
-  begin
-    FTargetFPS := Value;
-  end;
-end;
-
 procedure TSkiaAVisualizer.StopThread;
 begin
-  FActive := False;
   if Assigned(FThread) then
   begin
     FThread.Terminate;
     Sleep(50);
+    FThread := nil;
   end;
 end;
 
-{------------------------------------------------------------------------------
-  CONSTRUCTOR / DESTRUCTOR
-------------------------------------------------------------------------------}
-constructor TSkiaAVisualizer.Create(AOwner: TComponent);
+procedure TSkiaAVisualizer.ActivateRendering;
 begin
-  inherited Create(AOwner);
-  FLock := TCriticalSection.Create;
-  Align := TAlignLayout.Client;
-  HitTest := True;
-  FTargetFPS := 60;
-  FActive := True;
-  FTime := 0;
-  FVisualType := vtSpectrum;
-  FBackgroundType := btGradientBlobs;
-  FUseExternalData := False;
-  FSensitivity := 1.5;
-  FAccentColor := $FF00FFFF; // Default Accent (Bright Cyan)
-  FBarColor := $FF008080;    // Default Bar (Dark Teal)
-  FPrevWidth := 0;
-  FPrevHeight := 0;
-  FillChar(FAudioData, SizeOf(FAudioData), 0);
-  CreateEffect;
-  CreateBackground;
   StartThread;
-end;
-
-destructor TSkiaAVisualizer.Destroy;
-begin
-  StopThread;
-  FreeAndNil(FLock);
-  inherited;
-end;
-
-{------------------------------------------------------------------------------
-  OVERRIDE METHODS
-------------------------------------------------------------------------------}
-procedure TSkiaAVisualizer.Resize;
-begin
-  inherited;
-  if (FPrevWidth <> Width) or (FPrevHeight <> Height) then
-  begin
-    FPrevWidth := Width;
-    FPrevHeight := Height;
-    if not (csDestroying in ComponentState) then
-      Redraw;
-  end;
+  Redraw;
 end;
 
 procedure TSkiaAVisualizer.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const AOpacity: Single);
 var
-  DataCopy: TFFTData;
+  LocalData: TFFTData;
+  LocalBarColor, LocalAccentColor: TAlphaColor;
+  LocalSens: Single;
+  LocalTime: Double;
   EffectCopy: ISkVisualizerEffect;
   BgCopy: ISkBackgroundEffect;
-  SensitivityCopy: Single;
-  AccentCopy: TAlphaColor;
-  BarCopy: TAlphaColor;
+  LocalShowPeaks: Boolean;
 begin
-  DrawDynamicBackground(ACanvas, ADest, FTime, FAudioData, FSensitivity, FAccentColor);
+  if not Assigned(FThread) then
+    Exit;
 
+  // Acquire lock and copy necessary data for thread-safe rendering
   FLock.Acquire;
   try
-    DataCopy := FAudioData;
+    LocalData := FAudioData;
+    LocalBarColor := FBarColor;
+    LocalAccentColor := FAccentColor;
+    LocalSens := FSensitivity;
+    LocalTime := FTime;
+    BgCopy := FCurrentBackground;
     EffectCopy := FCurrentEffect;
-    SensitivityCopy := FSensitivity;
-    AccentCopy := FAccentColor;
-    BarCopy := FBarColor;
+    LocalShowPeaks := FShowFallingPeaks;
   finally
     FLock.Release;
   end;
 
+  // Draw the background effect
+  if Assigned(BgCopy) then
+    BgCopy.Draw(ACanvas, ADest, LocalTime, LocalData, LocalSens, LocalAccentColor);
+
+  // Draw the visualizer effect
   if Assigned(EffectCopy) then
-    EffectCopy.Draw(ACanvas, ADest, DataCopy, FTime, SensitivityCopy, AccentCopy, BarCopy);
-end;
-
-procedure TSkiaAVisualizer.UpdateAudioData(const NewData: TFFTData);
-begin
-  FLock.Acquire;
-  try
-    FAudioData := NewData;
-  finally
-    FLock.Release;
-  end;
+    EffectCopy.Draw(ACanvas, ADest, LocalData, LocalTime, LocalSens, LocalAccentColor, LocalBarColor, LocalShowPeaks);
 end;
 
 end.
+
