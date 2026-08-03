@@ -5,7 +5,7 @@ Delphi FMX Skia4delphi Audio Visualizer v0.3 alpha
     
 A high-performance, hardware-accelerated audio visualizer component for Delphi (FMX). Built on Skia4Delphi, it offers smooth, GPU-rendered visuals.    
      
-<img width="669" height="729" alt="Unbenannt" src="https://github.com/user-attachments/assets/7204f8e0-8d4f-4601-b0a7-c92f22806473" />
+<img width="665" height="725" alt="Unbenannt" src="https://github.com/user-attachments/assets/affb2425-6a85-4efb-9b53-f79cddbaa828" />
    
 It is designed to be audio-library agnostic. It simply accepts TFFTData (array of Single), so you can feed it data from BASS, FMOD, OpenAL, or any other audio engine.    
 Features    
