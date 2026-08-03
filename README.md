@@ -1,5 +1,5 @@
 # SkiaAVisualizer
-Delphi FMX Skia4delphi Audio Visualizer v0.2 alpha   
+Delphi FMX Skia4delphi Audio Visualizer v0.3 alpha   
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/LaMitaOne/SkiaAVisualizer)
     
@@ -37,8 +37,15 @@ If you want to tip me a coffee.. :)
 </p>
         
 
-    
+     
  ----Latest Changes   
+   v 0.3:    
+   - Added ShowFallingPeaks property    
+   - Smoothed bars and peaks to eliminate flickering    
+   - Replaced heavy ImageFilter with hardware-accelerated MaskFilter    
+   - Massive performance boost, runs now smooth even at dualcore...with 120fps    
+     (but not at fullscreen)   
+   
   v 0.2:   
    - Added slower falling Peaks to Spectrum   
    - Added new TSkBackgroundType = btGradientBlobs, btSolidDark, btSolidBlack   
