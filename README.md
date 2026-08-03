@@ -43,7 +43,7 @@ If you want to tip me a coffee.. :)
    - Added ShowFallingPeaks property    
    - Smoothed bars and peaks to eliminate flickering    
    - Replaced heavy ImageFilter with hardware-accelerated MaskFilter    
-   - Massive performance boost, runs now smooth even at dualcore...with 120fps    
+   - Massive performance boost, runs now smooth even on M3 dualcore...at 120fps    
      (but not at fullscreen)   
    
   v 0.2:   
