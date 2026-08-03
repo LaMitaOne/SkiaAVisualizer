@@ -7,8 +7,6 @@ A high-performance, hardware-accelerated audio visualizer component for Delphi (
      
 <img width="665" height="725" alt="Unbenannt" src="https://github.com/user-attachments/assets/affb2425-6a85-4efb-9b53-f79cddbaa828" />
    
-It is designed to be audio-library agnostic. It simply accepts TFFTData (array of Single), so you can feed it data from BASS, FMOD, OpenAL, or any other audio engine.    
-Features    
     
     4 Visualization Modes:    
         Spectrum: Classic bar spectrum with neon glow effects.    
