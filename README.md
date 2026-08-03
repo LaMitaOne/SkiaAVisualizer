@@ -46,6 +46,6 @@ If you want to tip me a coffee.. :)
    
   v 0.2:   
    - Added slower falling Peaks to Spectrum   
-   - Added new TSkBackgroundType = btGradientBlobs, btSolidDark, btSolidBlack   
+   - Added new TSkBackgroundType = btGradientBlobs, btSolidBlack   
    - Added property FBarColor   
     
