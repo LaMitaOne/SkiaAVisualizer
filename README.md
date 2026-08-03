@@ -6,7 +6,8 @@ Delphi FMX Skia4delphi Audio Visualizer v0.3 alpha
 A high-performance, hardware-accelerated audio visualizer component for Delphi (FMX). Built on Skia4Delphi, it offers smooth, GPU-rendered visuals.    
      
 <img width="665" height="725" alt="Unbenannt" src="https://github.com/user-attachments/assets/affb2425-6a85-4efb-9b53-f79cddbaa828" />
-   
+
+Sample video: https://www.youtube.com/watch?v=auMeGsbSWUQ       
     
     4 Visualization Modes:    
         Spectrum: Classic bar spectrum with neon glow effects.    
