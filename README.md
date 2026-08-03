@@ -41,9 +41,7 @@ If you want to tip me a coffee.. :)
    v 0.3:    
    - Added ShowFallingPeaks property    
    - Smoothed bars and peaks to eliminate flickering    
-   - Replaced heavy ImageFilter with hardware-accelerated MaskFilter    
-   - Massive performance boost, runs now smooth even at 120fps    
-     (but not at fullscreen with blobs)
+   - Replaced heavy ImageFilter with hardware-accelerated MaskFilter     
    - Had annoying problems with it on laptops, so redesigned partly, put bass inside again,     
      lots optimizations and now its running smooth even at M3 dualcore cpu (except blobs)      
    
